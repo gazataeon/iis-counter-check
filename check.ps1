@@ -1,26 +1,47 @@
-#monitor for requests executing
-#if that goes to 100 and stays at 100 then we would need to recycle the app pools
 
-#W3SVC_W3WP
-
-#list all counters (EXAMPLE)
-#$meh = Get-Counter -ListSet * | Select-Object CounterSetName, CounterSetType, Description, Paths 
-
-#list all active request counters (EXAMPLE)
-#get-counter -counter "\\$env:computername\\ASP.NET Apps v4.0.30319(__Total__)\Requests Executing"
-
-#get for specific site (EXAMPLE)
-#Get-Counter -Counter '\W3SVC_W3WP(13736_Skins.mppglobal.com)\Active Requests'
 ##################### VARIABLES ###########################
 $logFile = "C:\logs\IIS_Active_Requests"
 $reqsLimit = "99"
 $offenderSites = $null
 $executingHash = $null
+$webhook = "put your slack webhook here"
 Import-Module WebAdministration
+$server = "localhost"
+$search = "*" #we are aiming for all worker processes here, feel free to narrow it down
 
 #####################CHECK START###########################
-#run check against total requests
 
+
+
+function get-workerProcesses
+{
+$wmiQuery=[wmisearcher]"SELECT * FROM __Namespace where NAME like 'WebAdministration' or NAME like 'MicrosoftIISv2'"
+$wmiQuery.Scope.Path = "\\" + $server + "\root"
+
+#Pull in all worker proccesses
+$WPlist = Get-WmiObject -NameSpace 'root\WebAdministration' -class 'WorkerProcess' -ComputerName $server
+
+# Loop through the list of active IIS Worker Processes w3wp.exe and fetch the PID, AppPool Name and the startTime
+forEach ($WP in $WPlist)
+    {
+        if ($WP.apppoolname -like $search)
+        {
+            write-host "Found:" "PID:" $WP.processid  "AppPool_Name:"$WP.apppoolname (get-process -ID $WP.processid|Select-Object starttime)
+            
+        }
+    }
+
+#return any current running worker proccesses
+return $wp
+
+
+}
+
+
+
+
+
+#run check against total requests
 function Write-Tee($Message)
 {
     #Zip Up any old Logs (older than a day)
@@ -49,7 +70,7 @@ function Invoke-Recycle($Site)
     Write-Tee "App Pools Recycled"
 }
 
-#Must call this prior to "get-child item for some reason, no idea why
+#Must call this prior to "get-childitem" 
 $sitelist = Get-Website 
 
 #Get all the sites and their IDs
@@ -123,6 +144,14 @@ if ($totalExecutingRequests.CounterSamples.cookedvalue -gt $reqsLimit)
             
     #recycle the app pools
     Invoke-Recycle
+
+    #Check for any multiple worker processes
+    $workers = get-workerProcesses
+    if ($workers -ne $null)
+    {
+
+        #Take action
+    }
     
     # Slack message
     $Message = "@here - ASP Total Requests executing is currently at $($totalExecutingRequests.CounterSamples.cookedvalue) active requests on $($env:computername).
@@ -141,6 +170,6 @@ if ($totalExecutingRequests.CounterSamples.cookedvalue -gt $reqsLimit)
     Invoke-WebRequest -UseBasicParsing `
         -Body (ConvertTo-Json -Compress -InputObject $payload) `
         -Method Post `
-        -Uri "WEBHOOK GOES HERE" | Out-Null
+        -Uri $webhook | Out-Null
 }
  
